@@ -7,6 +7,13 @@ from PIL import Image
 import io
 import numpy as np
 
+
+def Math_round(v):
+    try:
+        return str(round(float(v)))
+    except Exception:
+        return "—"
+
 st.set_page_config(
     page_title="피부 각질세포 분석기 | 바이오분석오락실",
     page_icon="🔬",
