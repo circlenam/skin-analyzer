@@ -3,828 +3,512 @@ import anthropic
 import base64
 import json
 import re
-import io
-import math
-import datetime
-import numpy as np
 from PIL import Image
-
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-    GSPREAD_AVAILABLE = True
-except ImportError:
-    GSPREAD_AVAILABLE = False
+import io
+import numpy as np
 
 st.set_page_config(
-    page_title="손등 피부 텍스처 분석기 | 재능대 AI-바이오분석연구소",
+    page_title="피부 각질세포 분석기 | 바이오분석오락실",
     page_icon="🔬",
     layout="wide"
 )
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Noto+Sans+KR:wght@400;500;700&display=swap');
 
+/* 전체 배경 */
 .stApp { background-color: #0a0e1a; }
 [data-testid="stAppViewContainer"] { background-color: #0a0e1a; }
 [data-testid="stHeader"] { background-color: #0f1628; border-bottom: 1px solid #1e3a5f; }
-[data-testid="stSidebar"] { background-color: #0f1628 !important; border-right: 1px solid #1e3a5f; }
+
+/* 사이드바 */
+[data-testid="stSidebar"] {
+    background-color: #0f1628 !important;
+    border-right: 1px solid #1e3a5f;
+}
 [data-testid="stSidebar"] * { color: #c8d8e8 !important; }
 
-h1, h2, h3 {
-    font-family: 'Share Tech Mono', monospace !important;
-    color: #00d4ff !important;
-    letter-spacing: 1px;
-}
+/* 텍스트 */
+h1, h2, h3 { font-family: 'Share Tech Mono', monospace !important; color: #00d4ff !important; }
 p, div, span, label { color: #c8d8e8; font-family: 'Noto Sans KR', sans-serif; }
 
+/* 메트릭 */
 [data-testid="stMetric"] {
     background: #0f1628;
     border: 1px solid #1e3a5f;
     padding: 1rem;
-    border-radius: 4px;
 }
 [data-testid="stMetricValue"] {
     font-family: 'Share Tech Mono', monospace !important;
     color: #00d4ff !important;
-    font-size: 1.8rem !important;
+    font-size: 1.6rem !important;
 }
 [data-testid="stMetricLabel"] { color: #5a7a9a !important; font-size: 0.75rem !important; }
 
+/* 버튼 */
 .stButton > button {
     background: transparent !important;
     border: 1px solid #1e3a5f !important;
     color: #00d4ff !important;
     font-family: 'Share Tech Mono', monospace !important;
     letter-spacing: 1px;
-    padding: 0.6rem 1.2rem !important;
     transition: all .2s;
-    width: 100%;
 }
-.stButton > button:hover { border-color: #00d4ff !important; background: rgba(0,212,255,0.08) !important; }
+.stButton > button:hover {
+    border-color: #00d4ff !important;
+    background: rgba(0,212,255,0.08) !important;
+}
 
+/* 업로드 */
 [data-testid="stFileUploadDropzone"] {
     background: #0f1628 !important;
     border: 1px dashed #1e3a5f !important;
+    color: #5a7a9a !important;
 }
 
-.stSelectbox > div > div { background: #0f1628 !important; color: #c8d8e8 !important; }
-.stTextInput > div > div > input { background: #0f1628 !important; color: #c8d8e8 !important; border: 1px solid #1e3a5f !important; }
-.stNumberInput > div > div > input { background: #0f1628 !important; color: #c8d8e8 !important; border: 1px solid #1e3a5f !important; }
+/* 구분선 */
+hr { border-color: #1e3a5f; }
 
-hr { border-color: #1e3a5f !important; }
+/* info/success/warning 박스 */
+[data-testid="stAlert"] { background: #0f1628 !important; border: 1px solid #1e3a5f !important; }
 
-.result-card {
-    background: #0f1628;
+/* 스캔라인 오버레이 */
+.scanline {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px,
+        rgba(0,212,255,0.012) 2px, rgba(0,212,255,0.012) 4px);
+    pointer-events: none; z-index: 9999;
+}
+.mono { font-family: 'Share Tech Mono', monospace; }
+.tag {
+    display: inline-block;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    padding: 2px 8px;
     border: 1px solid #1e3a5f;
-    border-left: 3px solid #00d4ff;
-    border-radius: 4px;
-    padding: 1.5rem;
-    margin: 1rem 0;
+    color: #5a7a9a;
+    margin-right: 4px;
+    margin-bottom: 4px;
 }
+.badge-good { color: #7fff6e; border: 1px solid #7fff6e; padding: 2px 10px;
+              font-family: 'Share Tech Mono', monospace; font-size: 12px; }
+.badge-warn { color: #ffb300; border: 1px solid #ffb300; padding: 2px 10px;
+              font-family: 'Share Tech Mono', monospace; font-size: 12px; }
+.badge-bad  { color: #ff4757; border: 1px solid #ff4757; padding: 2px 10px;
+              font-family: 'Share Tech Mono', monospace; font-size: 12px; }
 .opinion-box {
     background: #0f1628;
     border: 1px solid #1e3a5f;
-    border-left: 3px solid #7fff6e;
+    border-left: 3px solid #00d4ff;
     padding: 1.25rem;
     font-size: 14px;
     line-height: 1.85;
     color: #c8d8e8;
-    border-radius: 4px;
-    margin: 1rem 0;
+    margin-bottom: 1rem;
 }
-.mono { font-family: 'Share Tech Mono', monospace; color: #00d4ff; }
-.badge-good { color: #7fff6e; border: 1px solid #7fff6e; padding: 2px 10px; font-family: 'Share Tech Mono', monospace; font-size: 12px; border-radius: 2px; }
-.badge-warn { color: #ffb300; border: 1px solid #ffb300; padding: 2px 10px; font-family: 'Share Tech Mono', monospace; font-size: 12px; border-radius: 2px; }
-.badge-bad  { color: #ff4757; border: 1px solid #ff4757; padding: 2px 10px; font-family: 'Share Tech Mono', monospace; font-size: 12px; border-radius: 2px; }
-.notice { background: rgba(0,212,255,0.04); border: 1px solid #1e3a5f; padding: 10px 14px; font-family: 'Share Tech Mono', monospace; font-size: 12px; color: #5a7a9a; margin: 0.5rem 0; border-radius: 2px; }
-.capture-guide {
-    background: rgba(127,255,110,0.06);
-    border: 2px dashed #7fff6e;
-    border-radius: 4px;
-    padding: 0.5rem 1rem;
+.notice-box {
+    background: rgba(0,212,255,0.04);
+    border: 1px solid #1e3a5f;
+    padding: 10px 14px;
     font-family: 'Share Tech Mono', monospace;
     font-size: 12px;
-    color: #7fff6e;
-    text-align: center;
-    margin: 0.5rem 0;
+    color: #5a7a9a;
+    letter-spacing: .5px;
+    margin-bottom: 1rem;
 }
-.icc-box {
+.reliability-box {
     background: #0f1628;
     border: 1px solid #1e3a5f;
-    border-left: 3px solid #ffb300;
     padding: 1rem 1.25rem;
-    border-radius: 4px;
-    margin: 1rem 0;
-}
-.data-table {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 12px;
-    color: #c8d8e8;
+    margin-top: 1rem;
 }
 </style>
+<div class="scanline"></div>
 """, unsafe_allow_html=True)
 
 
-# ─── 유틸리티 함수 ───────────────────────────────────
-
 def get_api_key():
+    """Streamlit secrets 또는 환경변수에서 API 키 로드"""
     try:
         return st.secrets["ANTHROPIC_API_KEY"]
-    except:
+    except Exception:
         import os
         return os.environ.get("ANTHROPIC_API_KEY", "")
 
 
-def image_to_base64(image: Image.Image):
-    if image.mode != "RGB":
-        image = image.convert("RGB")
+def image_to_base64(image: Image.Image) -> tuple[str, str]:
+    """PIL 이미지를 base64로 변환"""
+    buf = io.BytesIO()
+    fmt = "JPEG" if image.mode == "RGB" else "PNG"
+    image.save(buf, format=fmt)
+    data = base64.standard_b64encode(buf.getvalue()).decode()
+    media_type = "image/jpeg" if fmt == "JPEG" else "image/png"
+    return data, media_type
+
+
+def pixel_coverage(image: Image.Image) -> float:
+    """실제 픽셀 기반 피복률 계산 (밝은 영역 = 세포)"""
+    gray = np.array(image.convert("L"), dtype=np.float32)
+    thresh = 160
+    bright = np.sum(gray > thresh)
+    return round(float(bright) / gray.size * 100, 1)
+
+
+def analyze_with_claude(image: Image.Image, api_key: str) -> dict:
+    """Claude Vision으로 각질세포 이미지 분석"""
+    client = anthropic.Anthropic(api_key=api_key)
+
+    # 이미지 리사이즈 (API 비용 절감, 1200px 이하)
     max_side = 1200
     if max(image.size) > max_side:
         ratio = max_side / max(image.size)
-        image = image.resize((int(image.size[0]*ratio), int(image.size[1]*ratio)), Image.LANCZOS)
-    buf = io.BytesIO()
-    image.save(buf, format="JPEG", quality=90)
-    return base64.standard_b64encode(buf.getvalue()).decode(), "image/jpeg"
+        new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+        image = image.resize(new_size, Image.LANCZOS)
 
+    if image.mode != "RGB":
+        image = image.convert("RGB")
 
-def compute_icc(scores: list) -> float:
-    """ICC(2,1) 계산 — 3회 측정값"""
-    if len(scores) < 2:
-        return None
-    n = len(scores)
-    grand_mean = sum(scores) / n
-    ss_between = sum((s - grand_mean)**2 for s in scores) * n
-    ss_within = sum((s - grand_mean)**2 for s in scores)
-    if ss_between + ss_within == 0:
-        return 1.0
-    icc = (ss_between - ss_within) / (ss_between + ss_within * (n - 1))
-    return max(0.0, min(1.0, round(icc, 3)))
-
-
-def icc_grade(icc):
-    if icc is None: return "—", "badge-warn"
-    if icc >= 0.90: return "매우 우수", "badge-good"
-    if icc >= 0.75: return "양호", "badge-good"
-    if icc >= 0.50: return "보통", "badge-warn"
-    return "불량", "badge-bad"
-
-
-def analyze_image(image: Image.Image, api_key: str, subject_info: dict) -> dict:
-    """Claude Vision으로 피부 텍스처 분석"""
-    client = anthropic.Anthropic(api_key=api_key)
     b64, media_type = image_to_base64(image)
+    pixel_cov = pixel_coverage(image)
 
-    system = """당신은 피부과학 전문 연구자입니다.
-USB 디지털 현미경(실제 배율 약 35x, 시야 약 27×13mm)으로 촬영한
-손등 중앙부 피부 표면 이미지를 분석합니다.
-반드시 순수 JSON만 반환하고 마크다운은 절대 포함하지 마세요."""
+    system_prompt = """당신은 피부과학 전문 연구자이자 현미경 이미지 분석 전문가입니다.
+테이프스트리핑으로 채취한 각질세포(corneocyte) 현미경 이미지를 분석합니다.
+반드시 순수 JSON만 반환하고 마크다운 코드블록이나 다른 텍스트는 절대 포함하지 마세요."""
 
-    prompt = f"""피험자 정보: {subject_info['age_group']}대, {subject_info['gender']}성
-이 손등 피부 표면 이미지를 분석하여 아래 JSON으로만 응답하세요:
+    user_prompt = f"""이 현미경 이미지를 분석해서 아래 JSON 형식으로만 응답하세요.
+
+픽셀 분석으로 이미 측정된 값: 피복률 = {pixel_cov}%
+
+나머지 파라미터를 이미지에서 추정해서 JSON으로 반환:
 
 {{
-  "texture_uniformity": <피부결 균일도 0~100, 숫자>,
-  "wrinkle_density": "<낮음|보통|높음>",
-  "wrinkle_direction": "<규칙적|불규칙>",
-  "polygon_pattern": "<명확|보통|불명확>",
-  "polygon_size": "<소|중|대>",
-  "brightness_uniformity": "<균일|보통|불균일>",
-  "vellus_hair": "<있음|없음|불명확>",
-  "aging_grade": <노화 등급 0~4, 0=매우젊음 4=심한노화, 숫자>,
-  "skin_condition": "<건강|보통|건조|손상>",
-  "texture_score": <전반적 피부 텍스처 점수 0~100, 숫자>,
+  "area_um2": <평균 각질세포 면적 µm² 추정. 각질세포는 보통 200~500µm². 이미지 시야 크기와 세포 비율로 추정. 숫자>,
+  "circularity": <원형도 0~1. 정상 다각형=0.6~0.8, 건조=0.8~0.9, 손상=0.9~1.0. 숫자>,
+  "coverage_pct": {pixel_cov},
+  "cv_pct": <세포 크기 변동계수%. 균일=10~20, 보통=20~35, 불균일=35+. 숫자>,
+  "cell_count": <시야 내 추정 세포 수. 숫자>,
+  "fragment_pct": <파편화된 세포 비율%. 숫자>,
+  "barrier": "<양호|주의|저하>",
+  "layer": "<두꺼움|정상|얇음>",
+  "uniformity": "<균일|보통|불균일>",
+  "moisture": "<충분|보통|부족>",
+  "score": <종합 피부 점수 0~100. 숫자>,
   "confidence": "<높음|보통|낮음>",
   "image_quality": "<양호|보통|불량>",
-  "opinion": "<3~4문장 한국어 전문 소견. 1)피부결·텍스처 관찰 2)주름·노화 평가 3)해당 연령대 비교 4)관리 제안. 마지막줄 반드시: 종합 소견: [한 문장]>",
-  "limitations": "<이 분석의 한계점 1가지. 한국어>"
+  "opinion": "<4~6문장 한국어 전문 소견. 1)이미지 품질 및 세포 관찰 결과 2)각질세포 형태 해석(면적·원형도 의미) 3)피부 장벽 상태 평가 4)추정 원인 5)관리 방향. 마지막 줄 반드시: 종합 소견: [한 문장]>",
+  "limitations": "<이 분석의 주요 한계점 1~2가지. 한국어>"
 }}
 
-이미지가 피부 표면이 아니면: {{"error": "피부 표면 이미지가 아닙니다."}}"""
+이미지가 현미경 각질세포 이미지가 아니면:
+{{"error": "각질세포 현미경 이미지가 아닌 것 같습니다. 테이프스트리핑 후 스마트폰 현미경으로 촬영한 이미지를 업로드해주세요."}}"""
 
     response = client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=1200,
-        system=system,
+        model="claude-opus-4-5",
+        max_tokens=1500,
+        system=system_prompt,
         messages=[{
             "role": "user",
             "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
-                {"type": "text", "text": prompt}
+                {"type": "text", "text": user_prompt}
             ]
         }]
     )
+
     raw = response.content[0].text.strip()
     raw = re.sub(r'```json|```', '', raw).strip()
     return json.loads(raw)
 
 
-def get_gsheet():
-    """Google Sheets 연결"""
-    try:
-        if not GSPREAD_AVAILABLE:
-            return None
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        client = gspread.authorize(creds)
-        sheet_id = st.secrets.get("SHEET_ID", "")
-        if not sheet_id:
-            return None
-        spreadsheet = client.open_by_key(sheet_id)
-        return spreadsheet.worksheet("data")
-    except Exception as e:
-        return None
+def badge(val, good, warn):
+    if val == good:
+        return f'<span class="badge-good">{val}</span>'
+    elif val == warn:
+        return f'<span class="badge-warn">{val}</span>'
+    else:
+        return f'<span class="badge-bad">{val}</span>'
 
 
-def save_to_storage(record: dict):
-    """Google Sheets + 세션에 동시 저장"""
-    # 세션 저장 (화면 표시용)
-    try:
-        existing = st.session_state.get('all_data', [])
-        existing.append(record)
-        st.session_state['all_data'] = existing
-    except:
-        pass
-
-    # Google Sheets 저장 (영구 누적)
-    try:
-        ws = get_gsheet()
-        if ws:
-            row = [
-                str(record.get('측정일시', '')),
-                str(record.get('피험자ID', '')),
-                str(record.get('연령대', '')),
-                str(record.get('성별', '')),
-                str(record.get('회차', '')),
-                str(record.get('텍스처점수', '')),
-                str(record.get('텍스처균일도', '')),
-                str(record.get('노화등급', '')),
-                str(record.get('주름밀도', '')),
-                str(record.get('주름방향', '')),
-                str(record.get('다각형패턴', '')),
-                str(record.get('밝기균일도', '')),
-                str(record.get('피부상태', '')),
-                str(record.get('신뢰도', '')),
-                str(record.get('이미지품질', '')),
-                str(record.get('ICC', '')),
-            ]
-            ws.append_row(row)
-    except Exception as e:
-        pass
+def confidence_note(conf):
+    notes = {
+        "높음": "이미지 품질이 양호하고 세포 경계가 명확하여 분석 신뢰도가 높습니다.",
+        "보통": "이미지에서 세포 경계가 일부 불명확합니다. 더 선명한 이미지로 재촬영하면 정확도가 높아집니다.",
+        "낮음": "이미지 해상도나 초점이 분석에 충분하지 않습니다. 결과를 참고 수준으로만 활용하세요."
+    }
+    return notes.get(conf, "")
 
 
-def get_summary_sheet():
-    """summary 시트 연결"""
-    try:
-        if not GSPREAD_AVAILABLE:
-            return None
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        client = gspread.authorize(creds)
-        sheet_id = st.secrets.get("SHEET_ID", "")
-        if not sheet_id:
-            return None
-        spreadsheet = client.open_by_key(sheet_id)
-        return spreadsheet.worksheet("summary")
-    except Exception as e:
-        return None
+# ─── 메인 UI ──────────────────────────────────────────
 
+# 헤더
+col_back, col_title = st.columns([1, 6])
+with col_back:
+    st.markdown('<a href="https://circlenam.github.io/biogame/" style="font-family:Share Tech Mono,monospace;font-size:12px;color:#00d4ff;text-decoration:none;border:1px solid #1e3a5f;padding:4px 10px;letter-spacing:1px">← ARCADE</a>', unsafe_allow_html=True)
+with col_title:
+    st.markdown('<span style="font-family:Share Tech Mono,monospace;font-size:12px;color:#5a7a9a;letter-spacing:2px">STAGE 06 · SKIN CORNEOCYTE ANALYZER</span>', unsafe_allow_html=True)
 
-def save_summary(results: list, subject_info: dict, icc_val):
-    """summary 시트에 피험자 1명당 1행으로 평균값 저장"""
-    try:
-        ws = get_summary_sheet()
-        if not ws:
-            return
+st.markdown("---")
 
-        scores = [r.get('texture_score', 0) for r in results]
-        aging = [r.get('aging_grade', 0) for r in results]
-        uniformity = [r.get('texture_uniformity', 0) for r in results]
+st.markdown('<div class="mono" style="color:#5a7a9a;font-size:11px;letter-spacing:3px">// STAGE 06 · CORNEOCYTE ANALYSIS</div>', unsafe_allow_html=True)
+st.title("🔬 피부 각질세포 분석기")
+st.markdown('<div class="mono" style="color:#5a7a9a;font-size:12px">Tape Stripping + Smartphone Microscopy → AI Skin Barrier Assessment</div>', unsafe_allow_html=True)
 
-        avg_score = round(sum(scores) / len(scores), 1)
-        avg_aging = round(sum(aging) / len(aging), 1)
-        avg_uni = round(sum(uniformity) / len(uniformity), 1)
+st.markdown('<div class="notice-box">▶ Claude Vision AI (claude-opus-4-5)가 이미지를 직접 분석합니다 · 피복률은 픽셀 실측 · 나머지는 AI 시각 추정</div>', unsafe_allow_html=True)
 
-        icc_label, _ = icc_grade(icc_val)
-        last = results[-1]
-
-        # 3회 점수 각각 + 평균 + ICC
-        row = [
-            datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-            str(subject_info.get('id', '')),
-            str(subject_info.get('age_group', '')),
-            str(subject_info.get('gender', '')),
-            str(scores[0]) if len(scores) > 0 else '',
-            str(scores[1]) if len(scores) > 1 else '',
-            str(scores[2]) if len(scores) > 2 else '',
-            str(avg_score),
-            str(avg_aging),
-            str(avg_uni),
-            str(round(icc_val, 3)) if icc_val is not None else '',
-            str(icc_label),
-            str(last.get('wrinkle_density', '')),
-            str(last.get('skin_condition', '')),
-            str(last.get('opinion', '')[:100]) if last.get('opinion') else '',
-        ]
-        ws.append_row(row)
-    except Exception as e:
-        pass
-
-
-def load_all_data():
-    """Google Sheets summary 시트에서 전체 데이터 로드"""
-    try:
-        ws = get_summary_sheet()
-        if ws:
-            records = ws.get_all_records()
-            return records
-    except:
-        pass
-    return st.session_state.get('all_data', [])
-
-
-def badge_html(val, good, warn):
-    if val == good: cls = "badge-good"
-    elif val == warn: cls = "badge-warn"
-    else: cls = "badge-bad"
-    return f'<span class="{cls}">{val}</span>'
-
-
-def score_badge(score):
-    if score >= 75: return f'<span class="badge-good">{score}</span>'
-    if score >= 50: return f'<span class="badge-warn">{score}</span>'
-    return f'<span class="badge-bad">{score}</span>'
-
-
-# ─── 세션 초기화 ───────────────────────────────────
-
-if 'all_data' not in st.session_state:
-    st.session_state['all_data'] = []
-if 'results' not in st.session_state:
-    st.session_state['results'] = []
-if 'current_subject' not in st.session_state:
-    st.session_state['current_subject'] = {}
-if 'authenticated' not in st.session_state:
-    st.session_state['authenticated'] = False
-
-
-# ─── 접속 인증 ───────────────────────────────────────
-
-def check_access_password(pw: str) -> bool:
-    correct = st.secrets.get("ACCESS_PASSWORD", "jaeneung2025")
-    return pw == correct
-
-
-if not st.session_state['authenticated']:
-    st.markdown("""
-<div style="max-width:420px;margin:6rem auto;padding:2.5rem;background:#0f1628;
-     border:1px solid #1e3a5f;border-top:3px solid #00d4ff;border-radius:4px;text-align:center">
-  <div style="font-family:'Share Tech Mono',monospace;font-size:11px;
-       color:#5a7a9a;letter-spacing:3px;margin-bottom:1rem">
-    재능대학교 AI-바이오분석특화연구소
-  </div>
-  <div style="font-size:22px;font-weight:700;color:#fff;margin-bottom:0.25rem">
-    🔬 손등 피부 텍스처 분석기
-  </div>
-  <div style="font-family:'Share Tech Mono',monospace;font-size:11px;
-       color:#5a7a9a;margin-bottom:2rem">
-    Research Edition · 승인된 연구 참여자 전용
-  </div>
-  <div style="font-size:13px;color:#c8d8e8;margin-bottom:1.5rem;line-height:1.7">
-    본 프로그램은 연구 목적으로 운영됩니다.<br>
-    참여 코드는 연구 담당자에게 문의하세요.
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-    col_l, col_c, col_r = st.columns([1,2,1])
-    with col_c:
-        pw_input = st.text_input(
-            "참여 코드 입력",
-            type="password",
-            placeholder="연구 담당자에게 문의",
-            label_visibility="collapsed"
-        )
-        if st.button("▶ 입장", use_container_width=True):
-            if check_access_password(pw_input):
-                st.session_state['authenticated'] = True
-                st.rerun()
-            else:
-                st.error("참여 코드가 올바르지 않습니다. 연구 담당자에게 문의하세요.")
-        st.markdown("""
-<div style="text-align:center;margin-top:1.5rem;font-family:'Share Tech Mono',monospace;
-     font-size:10px;color:#1e3a5f">
-  본 연구는 재능대학교 바이오테크과 오픈랩 행사의 일환으로 진행됩니다<br>
-  © 2025 Jay H. Nam · AI-바이오분석특화연구소
-</div>
-""", unsafe_allow_html=True)
-    st.stop()
-
-
-# ─── 헤더 ───────────────────────────────────────────
-
-st.markdown("""
-<div style="display:flex;align-items:center;gap:12px;margin-bottom:0.5rem">
-  <span style="font-family:'Share Tech Mono',monospace;font-size:11px;color:#5a7a9a;letter-spacing:3px">
-    재능대학교 AI-바이오분석특화연구소
-  </span>
-</div>
-""", unsafe_allow_html=True)
-st.title("🔬 손등 피부 텍스처 분석기")
-st.markdown('<div class="mono" style="font-size:12px;color:#5a7a9a">Dorsal Hand Skin Texture Analyzer · USB Microscopy + LLM Vision AI · Research Edition</div>', unsafe_allow_html=True)
-
-# ─── 사이드바 ───────────────────────────────────────
-
+# ─── 사이드바 ───
 with st.sidebar:
     st.markdown("### ⚙️ 설정")
 
     api_key = get_api_key()
     if not api_key:
-        api_key = st.text_input("Anthropic API Key", type="password", placeholder="sk-ant-...")
+        api_key = st.text_input(
+            "Anthropic API Key",
+            type="password",
+            placeholder="sk-ant-...",
+            help="https://console.anthropic.com 에서 발급"
+        )
     else:
         st.success("API 키 연결됨")
 
     st.markdown("---")
-    mode = st.radio("모드 선택", ["📋 측정 모드", "🔒 연구팀 모드"], index=0)
+    st.markdown("### 📋 분석 단계")
+    st.markdown("""
+<div class="mono" style="font-size:11px;line-height:2">
+1 → 테이프스트리핑 채취<br>
+2 → 스마트폰 현미경 촬영<br>
+3 → 이미지 업로드<br>
+4 → AI 자동 판독<br>
+5 → 리포트 확인
+</div>
+""", unsafe_allow_html=True)
 
-    if mode == "🔒 연구팀 모드":
-        pw = st.text_input("비밀번호", type="password")
-        research_mode = (pw == st.secrets.get("RESEARCH_PASSWORD", "jaeneung2025"))
+    st.markdown("---")
+    st.markdown("### ⚠️ 판독 한계")
+    st.markdown("""
+<div style="font-size:12px;line-height:1.7;color:#5a7a9a">
+<b style="color:#ffb300">면적(µm²)</b><br>
+캘리브레이션 없이 절대값 부정확.<br>
+동일 배율에서 상대 비교 권장.<br><br>
+<b style="color:#ffb300">원형도·CV%</b><br>
+AI 시각 추정. ±15% 오차 가능.<br><br>
+<b style="color:#7fff6e">피복률(%)</b><br>
+픽셀 직접 측정. 가장 신뢰 가능.<br><br>
+<b style="color:#7fff6e">정성 판독</b><br>
+장벽 상태, 소견은 참고 수준.<br>
+임상 진단 대체 불가.
+</div>
+""", unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("""
+<div class="mono" style="font-size:10px;color:#1e3a5f">
+바이오분석오락실 STAGE 06<br>
+재능대학교 AI-바이오분석특화연구소<br>
+© 2025 Jay H. Nam
+</div>
+""", unsafe_allow_html=True)
+
+# ─── 업로드 ───
+st.markdown("### 📂 이미지 업로드")
+uploaded = st.file_uploader(
+    "테이프스트리핑 현미경 이미지 (JPG / PNG / TIFF)",
+    type=["jpg", "jpeg", "png", "tiff", "tif"],
+    help="스마트폰 접사렌즈 또는 실험실 광학현미경 이미지를 업로드하세요"
+)
+
+if uploaded:
+    image = Image.open(uploaded)
+
+    col_img, col_info = st.columns([3, 2])
+    with col_img:
+        st.markdown("#### 업로드 이미지")
+        st.image(image, use_container_width=True)
+        st.markdown(f'<div class="mono" style="font-size:11px;color:#5a7a9a">크기: {image.size[0]}×{image.size[1]}px · 모드: {image.mode}</div>', unsafe_allow_html=True)
+
+    with col_info:
+        st.markdown("#### 픽셀 실측값")
+        pix_cov = pixel_coverage(image)
+        st.metric("피복률 (픽셀 직접 측정)", f"{pix_cov}%", help="임계값(160) 이상 밝은 픽셀 비율. 가장 신뢰 가능한 수치.")
+
+        cov_interp = "정상 범위" if 35 <= pix_cov <= 65 else ("각질 축적 의심" if pix_cov > 65 else "각질 부족")
+        cov_badge = "badge-good" if 35 <= pix_cov <= 65 else "badge-warn"
+        st.markdown(f'<span class="{cov_badge}">{cov_interp}</span>', unsafe_allow_html=True)
+
+        st.markdown("---")
+        st.markdown("""
+<div style="font-size:12px;color:#5a7a9a;line-height:1.8">
+<b style="color:#c8d8e8">피복률 기준</b><br>
+35~65% → 정상<br>
+&gt;65% → 각질 축적<br>
+&lt;35% → 각질 부족
+</div>
+""", unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    if not api_key:
+        st.warning("사이드바에 Anthropic API Key를 입력하면 AI 분석이 시작됩니다.")
     else:
-        research_mode = False
+        with st.spinner("Claude Vision AI 분석 중..."):
+            try:
+                result = analyze_with_claude(image, api_key)
 
-    st.markdown("---")
-    st.markdown("""
-<div style="font-size:11px;color:#5a7a9a;font-family:'Share Tech Mono',monospace;line-height:2">
-측정 프로토콜:<br>
-1 → 손등 중앙부 표시<br>
-2 → USB 현미경 접촉<br>
-3 → 촬영 → 갤러리 저장<br>
-4 → 현미경 완전히 뗌<br>
-5 → 30초 후 재촬영<br>
-6 → 총 3회 반복<br>
-7 → 이미지 3장 업로드
+                if "error" in result:
+                    st.error(result["error"])
+                else:
+                    # ─── 수치 메트릭 ───
+                    st.markdown("### 📊 형태학 파라미터")
+                    st.markdown(f'<div class="notice-box">신뢰도: <b style="color:#00d4ff">{result.get("confidence","—")}</b> · 이미지 품질: <b style="color:#00d4ff">{result.get("image_quality","—")}</b> · 피복률은 픽셀 실측, 나머지는 AI 시각 추정</div>', unsafe_allow_html=True)
+
+                    c1, c2, c3, c4, c5 = st.columns(5)
+                    c1.metric("평균 면적 (µm²)", Math_round(result.get("area_um2", 0)),
+                              help="AI 추정. 캘리브레이션 없이 절대값 부정확. 상대 비교 권장.")
+                    c2.metric("원형도", f"{float(result.get('circularity',0)):.2f}",
+                              help="0=선형, 1=완전원형. 정상 각질세포는 다각형(0.6~0.8).")
+                    c3.metric("피복률 (%)", f"{result.get('coverage_pct',0):.1f}",
+                              help="픽셀 직접 측정값. 가장 신뢰 가능.")
+                    c4.metric("크기 CV (%)", f"{float(result.get('cv_pct',0)):.1f}",
+                              help="세포 크기 균일성. 낮을수록 균일.")
+                    c5.metric("추정 세포 수", Math_round(result.get("cell_count", 0)),
+                              help="AI가 시야 내 세포를 시각적으로 계수한 추정값.")
+
+                    st.markdown("---")
+
+                    # ─── 상태 지표 + 파라미터 가이드 ───
+                    col_status, col_guide = st.columns(2)
+
+                    with col_status:
+                        st.markdown("#### 피부 상태 지표")
+                        rows = [
+                            ("피부 장벽", result.get("barrier","—"), "양호", "주의"),
+                            ("각질층 상태", result.get("layer","—"), "정상", "두꺼움"),
+                            ("세포 균일성", result.get("uniformity","—"), "균일", "보통"),
+                            ("수분 수준", result.get("moisture","—"), "충분", "보통"),
+                        ]
+                        for label, val, good, warn in rows:
+                            b = badge(val, good, warn)
+                            st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1e3a5f;font-size:13px"><span>{label}</span>{b}</div>', unsafe_allow_html=True)
+
+                        sc = int(result.get("score", 0))
+                        sc_class = "badge-good" if sc >= 75 else ("badge-warn" if sc >= 50 else "badge-bad")
+                        st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:13px"><span>종합 점수</span><span class="{sc_class}" style="font-family:Share Tech Mono,monospace;font-size:13px;padding:2px 10px;border:1px solid">{sc} / 100</span></div>', unsafe_allow_html=True)
+
+                    with col_guide:
+                        st.markdown("#### 파라미터 해석 기준")
+                        st.markdown("""
+<div style="font-size:12px;line-height:2;color:#c8d8e8">
+<span class="badge-good">양호</span> 면적 &gt;350 µm² · 수분 충분<br>
+<span class="badge-good">양호</span> 원형도 &lt;0.80 · 다각형 형태<br>
+<span class="badge-good">양호</span> CV% &lt;25 · 크기 균일<br>
+<span class="badge-warn">주의</span> 원형도 0.80~0.90 · 수축 경향<br>
+<span class="badge-warn">주의</span> 피복률 &gt;65% · 각질 축적<br>
+<span class="badge-bad">저하</span> 원형도 &gt;0.90 · 위축·손상<br>
+<span class="badge-bad">저하</span> CV% &gt;35 · 크기 불균일<br>
+<span class="badge-bad">저하</span> 파편 &gt;30% · 장벽 손상
 </div>
 """, unsafe_allow_html=True)
 
-    st.markdown("---")
-    total = len(load_all_data())
-    subjects = len(set(r.get('subject_id','') for r in load_all_data()))
-    st.markdown(f'<div class="mono" style="font-size:11px;color:#5a7a9a">누적 측정: {total}건<br>피험자 수: {subjects}명</div>', unsafe_allow_html=True)
+                    st.markdown("---")
 
-    st.markdown("---")
-    st.markdown("""
-<div style="font-size:11px;color:#5a7a9a;font-family:'Share Tech Mono',monospace;line-height:1.9">
-<span style="color:#00d4ff;letter-spacing:2px">// DEVELOPER</span><br><br>
-<span style="color:#ffffff;font-weight:700;font-size:12px">남정훈 교수</span><br>
-<span style="color:#c8d8e8;font-size:10px">Jay H. Nam, Ph.D.</span><br><br>
-재능대학교 바이오테크과 학과장<br>
-AI-바이오분석특화연구소 (산학협력단 부설)<br><br>
-<span style="color:#7fff6e">연구분야</span><br>
-생체유체역학 · 혈유변학<br>
-랩온어칩 기반 시료전처리<br><br>
-<a href="https://github.com/circlenam" target="_blank" style="color:#00d4ff;text-decoration:none">⬡ GitHub · circlenam</a><br>
-<a href="https://linkedin.com/in/circlenam" target="_blank" style="color:#00d4ff;text-decoration:none">⬡ LinkedIn · circlenam</a><br>
-<a href="mailto:namjh@jeiu.ac.kr" style="color:#00d4ff;text-decoration:none">⬡ namjh@jeiu.ac.kr</a><br><br>
-<a href="https://circlenam.github.io/biogame/" target="_blank" style="color:#7fff6e;text-decoration:none">⬡ 바이오분석오락실</a><br>
-<a href="https://bioanalysis.re.kr" target="_blank" style="color:#7fff6e;text-decoration:none">⬡ bioanalysis.re.kr</a><br><br>
-<span style="color:#1e3a5f">© 2025 Jay H. Nam · 재능대학교</span>
+                    # ─── AI 소견 ───
+                    st.markdown("#### 🤖 AI 판독 소견")
+                    conf = result.get("confidence", "보통")
+                    conf_note = confidence_note(conf)
+                    if conf_note:
+                        st.markdown(f'<div class="notice-box">{conf_note}</div>', unsafe_allow_html=True)
+
+                    opinion_html = result.get("opinion","소견 없음").replace("\n","<br>")
+                    st.markdown(f'<div class="opinion-box">{opinion_html}</div>', unsafe_allow_html=True)
+
+                    # ─── 한계점 명시 ───
+                    limitations = result.get("limitations","")
+                    if limitations:
+                        st.markdown(f'<div class="reliability-box"><span class="mono" style="color:#ffb300;font-size:11px">⚠ 분석 한계</span><br><span style="font-size:12px;color:#5a7a9a">{limitations}</span></div>', unsafe_allow_html=True)
+
+                    st.markdown("---")
+
+                    # ─── 신뢰도 안내 ───
+                    st.markdown("#### 📌 이 결과를 어떻게 활용하나요?")
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.markdown("""
+<div style="font-size:13px;line-height:1.8">
+<span class="badge-good">권장 활용</span><br>
+• 동일 배율 전후 비교 (보습제 효과 등)<br>
+• 교육용 시연·오픈랩 데모<br>
+• 연구 예비실험 스크리닝<br>
+• 정성적 피부 상태 판단
+</div>
+""", unsafe_allow_html=True)
+                    with col_b:
+                        st.markdown("""
+<div style="font-size:13px;line-height:1.8">
+<span class="badge-bad">주의 필요</span><br>
+• 절대 수치 기반 임상 진단 ✗<br>
+• 논문 정량 데이터 단독 사용 ✗<br>
+• 규제 제출용 분석 데이터 ✗<br>
+• 배율 미기록 시 면적값 비교 ✗
 </div>
 """, unsafe_allow_html=True)
 
+                    st.markdown("---")
 
-# ═══════════════════════════════════════════════════
-# 측정 모드
-# ═══════════════════════════════════════════════════
+                    # ─── 리포트 다운로드 ───
+                    report = f"""피부 각질세포 AI 분석 리포트
+생성: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}
+바이오분석오락실 STAGE 06 · circlenam.github.io/biogame
+분석 모델: claude-opus-4-5 (Claude Vision)
 
-if not research_mode:
+[형태학 파라미터]
+평균 면적 (AI 추정): {Math_round(result.get('area_um2',0))} µm²
+원형도 (AI 추정): {float(result.get('circularity',0)):.2f}
+피복률 (픽셀 실측): {result.get('coverage_pct',0):.1f}%
+크기 CV% (AI 추정): {float(result.get('cv_pct',0)):.1f}%
+추정 세포 수: {Math_round(result.get('cell_count',0))}개
+파편화 비율 (AI 추정): {result.get('fragment_pct',0):.1f}%
+이미지 품질: {result.get('image_quality','—')}
+분석 신뢰도: {result.get('confidence','—')}
 
-    st.markdown("---")
-    st.markdown("### 01 · 피험자 정보 입력")
+[피부 상태]
+장벽: {result.get('barrier','—')}
+각질층: {result.get('layer','—')}
+균일성: {result.get('uniformity','—')}
+수분: {result.get('moisture','—')}
+종합 점수: {result.get('score',0)}점 / 100
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        subject_id = st.text_input("피험자 ID", placeholder="P001", max_chars=10)
-    with col2:
-        age_group = st.selectbox("연령대", ["20", "30", "40", "50", "60"])
-    with col3:
-        gender = st.selectbox("성별", ["여", "남"])
+[AI 판독 소견]
+{result.get('opinion','')}
 
-    subject_info = {"id": subject_id, "age_group": age_group, "gender": gender}
+[분석 한계]
+{result.get('limitations','')}
 
-    st.markdown("---")
-    st.markdown("### 02 · 이미지 업로드 (3회 촬영)")
-    st.markdown('<div class="notice">▶ 갤러리에서 동일 부위 3회 촬영 이미지를 순서대로 업로드하세요</div>', unsafe_allow_html=True)
+[활용 주의사항]
+- 면적(µm²)은 캘리브레이션 없이 절대값 부정확. 동일 배율 상대 비교 권장.
+- 피복률(%)은 픽셀 직접 측정으로 가장 신뢰 가능.
+- 본 결과는 교육·연구 참고용이며 임상 진단을 대체하지 않습니다.
+"""
+                    st.download_button(
+                        label="▼ 리포트 다운로드 (.txt)",
+                        data=report.encode("utf-8"),
+                        file_name=f"skin-report-{__import__('datetime').datetime.now().strftime('%Y%m%d')}.txt",
+                        mime="text/plain"
+                    )
 
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        st.markdown('<div class="mono" style="font-size:12px;margin-bottom:8px">1회차</div>', unsafe_allow_html=True)
-        img1 = st.file_uploader("1회차", type=["jpg","jpeg","png"], key="img1", label_visibility="collapsed")
-        if img1: st.image(Image.open(img1), use_container_width=True)
-
-    with col_b:
-        st.markdown('<div class="mono" style="font-size:12px;margin-bottom:8px">2회차</div>', unsafe_allow_html=True)
-        img2 = st.file_uploader("2회차", type=["jpg","jpeg","png"], key="img2", label_visibility="collapsed")
-        if img2: st.image(Image.open(img2), use_container_width=True)
-
-    with col_c:
-        st.markdown('<div class="mono" style="font-size:12px;margin-bottom:8px">3회차</div>', unsafe_allow_html=True)
-        img3 = st.file_uploader("3회차", type=["jpg","jpeg","png"], key="img3", label_visibility="collapsed")
-        if img3: st.image(Image.open(img3), use_container_width=True)
-
-    uploaded = [f for f in [img1, img2, img3] if f is not None]
-    n_uploaded = len(uploaded)
-
-    st.markdown(f'<div class="notice">업로드된 이미지: {n_uploaded}/3장</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    if st.button("🔬 분석 시작", disabled=(n_uploaded == 0 or not api_key or not subject_id)):
-        if not subject_id:
-            st.error("피험자 ID를 입력하세요.")
-        else:
-            results = []
-            progress = st.progress(0)
-            status = st.empty()
-
-            for i, f in enumerate(uploaded):
-                status.markdown(f'<div class="notice">▶ {i+1}회차 분석 중...</div>', unsafe_allow_html=True)
-                img = Image.open(f)
-                try:
-                    result = analyze_image(img, api_key, subject_info)
-                    if "error" not in result:
-                        result['round'] = i + 1
-                        results.append(result)
-                except Exception as e:
-                    st.error(f"{i+1}회차 오류: {str(e)}")
-                progress.progress((i+1) / n_uploaded)
-
-            status.empty()
-            progress.empty()
-
-            if results:
-                st.session_state['results'] = results
-                st.session_state['current_subject'] = subject_info
-
-                # 누적 저장
-                scores = [r.get('texture_score', 0) for r in results]
-                aging = [r.get('aging_grade', 0) for r in results]
-                icc_val = compute_icc(scores) if len(scores) == 3 else None
-
-                # data 시트: 3회 각각 원본 저장
-                for i, r in enumerate(results):
-                    record = {
-                        "측정일시": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "피험자ID": subject_id,
-                        "연령대": age_group,
-                        "성별": gender,
-                        "회차": i + 1,
-                        "텍스처점수": r.get('texture_score'),
-                        "텍스처균일도": r.get('texture_uniformity'),
-                        "노화등급": r.get('aging_grade'),
-                        "주름밀도": r.get('wrinkle_density'),
-                        "주름방향": r.get('wrinkle_direction'),
-                        "다각형패턴": r.get('polygon_pattern'),
-                        "밝기균일도": r.get('brightness_uniformity'),
-                        "피부상태": r.get('skin_condition'),
-                        "신뢰도": r.get('confidence'),
-                        "이미지품질": r.get('image_quality'),
-                        "ICC": icc_val if i == 2 else None,
-                    }
-                    save_to_storage(record)
-
-                # summary 시트: 피험자 1명당 1행 (평균값 + ICC)
-                save_summary(results, subject_info, icc_val)
-
-                st.success("✅ 분석 완료")
-                st.rerun()
-
-    # ─── 결과 표시 ─────────────────────────────────
-
-    if st.session_state.get('results'):
-        results = st.session_state['results']
-        subj = st.session_state.get('current_subject', {})
-        scores = [r.get('texture_score', 0) for r in results]
-        aging_scores = [r.get('aging_grade', 0) for r in results]
-        avg_score = round(sum(scores) / len(scores))
-        avg_aging = round(sum(aging_scores) / len(aging_scores), 1)
-        icc_val = compute_icc(scores) if len(scores) == 3 else None
-        icc_label, icc_cls = icc_grade(icc_val)
-
-        st.markdown("---")
-
-        # 캡처 가이드
-        st.markdown('<div class="capture-guide">📸 아래 결과 화면을 캡처하여 피험자에게 전송하세요</div>', unsafe_allow_html=True)
-
-        # ── 결과 카드 (캡처용) ──
-        st.markdown(f"""
-<div class="result-card">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
-    <div>
-      <div class="mono" style="font-size:11px;color:#5a7a9a;letter-spacing:2px">// SKIN TEXTURE ANALYSIS REPORT</div>
-      <div style="font-size:18px;font-weight:700;color:#fff;margin-top:4px">손등 피부 텍스처 분석 결과</div>
-    </div>
-    <div style="text-align:right;font-family:'Share Tech Mono',monospace;font-size:11px;color:#5a7a9a">
-      재능대학교<br>AI-바이오분석특화연구소<br>{datetime.datetime.now().strftime("%Y-%m-%d")}
-    </div>
-  </div>
-  <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
-    <div style="background:#0a0e1a;padding:8px 16px;border:1px solid #1e3a5f;border-radius:2px;font-family:'Share Tech Mono',monospace;font-size:12px">
-      피험자 {subj.get('id','—')} · {subj.get('age_group','—')}대 · {subj.get('gender','—')}성
-    </div>
-    <div style="background:#0a0e1a;padding:8px 16px;border:1px solid #1e3a5f;border-radius:2px;font-family:'Share Tech Mono',monospace;font-size:12px">
-      측정 {len(results)}회 완료
-    </div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-        # 핵심 수치
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("텍스처 점수 (평균)", f"{avg_score} / 100")
-        c2.metric("노화 등급 (평균)", f"{avg_aging} / 4")
-        c3.metric("측정 신뢰도 ICC", f"{icc_val:.2f}" if icc_val else "—")
-        c4.metric("이미지 수", f"{len(results)} 회")
-
-        # 회차별 상세
-        st.markdown("#### 회차별 분석 결과")
-        cols = st.columns(len(results))
-        for i, (col, r) in enumerate(zip(cols, results)):
-            with col:
-                st.markdown(f'<div class="mono" style="font-size:11px;color:#5a7a9a;margin-bottom:8px">{i+1}회차</div>', unsafe_allow_html=True)
-                rows = [
-                    ("텍스처점수", f"{r.get('texture_score')}/100"),
-                    ("노화등급", f"{r.get('aging_grade')}/4"),
-                    ("주름밀도", r.get('wrinkle_density','—')),
-                    ("피부결", r.get('polygon_pattern','—')),
-                    ("피부상태", r.get('skin_condition','—')),
-                    ("이미지품질", r.get('image_quality','—')),
-                ]
-                for k, v in rows:
-                    st.markdown(f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1e3a5f;font-size:12px"><span style="color:#5a7a9a">{k}</span><span style="font-family:Share Tech Mono,monospace;color:#c8d8e8">{v}</span></div>', unsafe_allow_html=True)
-
-        # ICC 해석
-        if icc_val is not None:
-            st.markdown(f"""
-<div class="icc-box">
-  <div class="mono" style="font-size:11px;color:#ffb300;margin-bottom:8px">// 반복 측정 신뢰도 (ICC)</div>
-  <div style="font-size:24px;font-weight:700;color:#ffb300;font-family:'Share Tech Mono',monospace">{icc_val:.3f}</div>
-  <div style="margin-top:8px">
-    <span class="{icc_cls}">{icc_label}</span>
-    <span style="font-size:12px;color:#5a7a9a;margin-left:12px">
-      {'ICC ≥ 0.90: 매우 우수' if icc_val >= 0.90 else 'ICC ≥ 0.75: 신뢰도 충분' if icc_val >= 0.75 else 'ICC < 0.75: 재측정 권장'}
-    </span>
-  </div>
-  <div style="font-size:11px;color:#5a7a9a;margin-top:8px;font-family:'Share Tech Mono',monospace">
-    텍스처 점수 3회: {scores[0]} · {scores[1]} · {scores[2]}
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-        # AI 소견 (마지막 회차 기준)
-        last = results[-1]
-        st.markdown("#### AI 판독 소견")
-        conf = last.get('confidence','보통')
-        conf_colors = {"높음": "#7fff6e", "보통": "#ffb300", "낮음": "#ff4757"}
-        conf_color = conf_colors.get(conf, "#ffb300")
-        st.markdown(f'<div class="notice">분석 신뢰도: <span style="color:{conf_color};font-family:Share Tech Mono,monospace">{conf}</span> · 이미지 품질: <span style="color:{conf_color};font-family:Share Tech Mono,monospace">{last.get("image_quality","—")}</span></div>', unsafe_allow_html=True)
-        opinion = last.get('opinion','소견 없음').replace('\n','<br>')
-        st.markdown(f'<div class="opinion-box">{opinion}</div>', unsafe_allow_html=True)
-
-        # 한계점
-        lim = last.get('limitations','')
-        if lim:
-            st.markdown(f'<div class="notice">⚠ 분석 한계: {lim}</div>', unsafe_allow_html=True)
-
-        # 연구소 서명
-        st.markdown(f"""
-<div style="text-align:center;padding:1rem;border-top:1px solid #1e3a5f;margin-top:1rem">
-  <div class="mono" style="font-size:11px;color:#5a7a9a">
-    재능대학교 바이오테크과 · AI-바이오분석특화연구소<br>
-    본 결과는 연구 참고용이며 임상 진단을 대체하지 않습니다
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-        st.markdown('<div class="capture-guide">📸 위 결과를 화면 캡처 후 카카오톡으로 전송하세요</div>', unsafe_allow_html=True)
-
-        st.markdown("---")
-
-        # 초기화
-        if st.button("↺ 새 피험자 측정"):
-            st.session_state['results'] = []
-            st.session_state['current_subject'] = {}
-            st.rerun()
-
-
-# ═══════════════════════════════════════════════════
-# 연구팀 모드
-# ═══════════════════════════════════════════════════
+            except json.JSONDecodeError:
+                st.error("AI 응답 파싱 오류. 다시 시도해주세요.")
+            except anthropic.APIConnectionError:
+                st.error("API 연결 오류. 인터넷 연결과 API 키를 확인해주세요.")
+            except anthropic.AuthenticationError:
+                st.error("API 키가 올바르지 않습니다. 사이드바에서 확인해주세요.")
+            except Exception as e:
+                st.error(f"오류 발생: {str(e)}")
 
 else:
-    st.markdown("---")
-    st.markdown("### 🔒 연구팀 대시보드")
-
-    all_data = load_all_data()
-
-    if not all_data:
-        st.info("아직 측정 데이터가 없습니다.")
-    else:
-        import pandas as pd
-
-        df = pd.DataFrame(all_data)
-
-        # 컬럼명 안전하게 처리
-        score_col = '평균텍스처점수' if '평균텍스처점수' in df.columns else ('텍스처점수' if '텍스처점수' in df.columns else None)
-        aging_col = '평균노화등급' if '평균노화등급' in df.columns else ('노화등급' if '노화등급' in df.columns else None)
-        id_col = '피험자ID' if '피험자ID' in df.columns else None
-        age_col = '연령대' if '연령대' in df.columns else None
-        icc_col = 'ICC' if 'ICC' in df.columns else None
-
-        # 요약 통계
-        st.markdown("#### 데이터 수집 현황")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("총 피험자 수", len(df))
-        c2.metric("피험자 ID 수", df[id_col].nunique() if id_col else '—')
-
-        if score_col:
-            scores_num = pd.to_numeric(df[score_col], errors='coerce')
-            c3.metric("평균 텍스처 점수", f"{scores_num.mean():.1f}" if not scores_num.isna().all() else '—')
-        else:
-            c3.metric("평균 텍스처 점수", "—")
-
-        if aging_col:
-            aging_num = pd.to_numeric(df[aging_col], errors='coerce')
-            c4.metric("평균 노화 등급", f"{aging_num.mean():.2f}" if not aging_num.isna().all() else '—')
-        else:
-            c4.metric("평균 노화 등급", "—")
-
-        st.markdown("---")
-
-        # 연령별 통계
-        if score_col and age_col:
-            st.markdown("#### 연령대별 평균 텍스처 점수")
-            df[score_col] = pd.to_numeric(df[score_col], errors='coerce')
-            age_stats = df.groupby(age_col)[score_col].agg(['mean','std','count']).round(2)
-            age_stats.columns = ['평균점수', '표준편차', '피험자수']
-            st.dataframe(age_stats, use_container_width=True)
-
-        # ICC 현황
-        if icc_col:
-            df[icc_col] = pd.to_numeric(df[icc_col], errors='coerce')
-            icc_data = df[df[icc_col].notna()]
-            if not icc_data.empty:
-                st.markdown("#### ICC 신뢰도 현황")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("평균 ICC", f"{icc_data[icc_col].mean():.3f}")
-                c2.metric("ICC ≥ 0.75 비율", f"{(icc_data[icc_col] >= 0.75).mean()*100:.0f}%")
-                c3.metric("ICC ≥ 0.90 비율", f"{(icc_data[icc_col] >= 0.90).mean()*100:.0f}%")
-
-        st.markdown("---")
-
-        # 3회 점수 비교 (summary 시트)
-        if all(c in df.columns for c in ['점수1회','점수2회','점수3회']):
-            st.markdown("#### 회차별 점수 분포")
-            for col in ['점수1회','점수2회','점수3회']:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            round_stats = pd.DataFrame({
-                '1회차': [df['점수1회'].mean().round(1), df['점수1회'].std().round(1)],
-                '2회차': [df['점수2회'].mean().round(1), df['점수2회'].std().round(1)],
-                '3회차': [df['점수3회'].mean().round(1), df['점수3회'].std().round(1)],
-            }, index=['평균', '표준편차'])
-            st.dataframe(round_stats, use_container_width=True)
-
-        st.markdown("---")
-
-        # 전체 데이터 테이블
-        st.markdown("#### 전체 데이터 (summary)")
-        st.dataframe(df, use_container_width=True)
-
-        st.markdown("---")
-
-        # CSV 다운로드
-        csv = df.to_csv(index=False, encoding='utf-8-sig')
-        today = datetime.datetime.now().strftime("%Y%m%d")
-        st.download_button(
-            label="▼ CSV 다운로드 (논문용)",
-            data=csv.encode('utf-8-sig'),
-            file_name=f"skin_texture_summary_{today}.csv",
-            mime="text/csv"
-        )
-
-        st.markdown(f'<div class="notice">※ summary 시트 기준 · 피험자 1명당 1행 · SPSS/R에서 바로 사용 가능</div>', unsafe_allow_html=True)
-
-        # 데이터 초기화
-        st.markdown("---")
-        if st.button("⚠️ 세션 데이터 초기화"):
-            st.session_state['all_data'] = []
-            st.rerun()
+    st.markdown("""
+<div style="text-align:center;padding:3rem;border:1px dashed #1e3a5f;background:#0f1628">
+<div class="mono" style="font-size:36px;color:#1e3a5f;margin-bottom:1rem">⬡</div>
+<div style="font-size:14px;color:#5a7a9a">테이프스트리핑 후 스마트폰 현미경으로 촬영한 이미지를 업로드하세요</div>
+<div class="mono" style="font-size:11px;color:#1e3a5f;margin-top:.5rem">JPG · PNG · TIFF</div>
+</div>
+""", unsafe_allow_html=True)
